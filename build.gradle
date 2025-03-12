@@ -8,11 +8,13 @@ java {
     withSourcesJar()
 }
 
-description = 'Example'
+description = 'Record Sync'
 
 dependencies {
-    api 'com.psddev:cms-db'
     api 'com.psddev:dari-db'
+    api 'com.psddev:dari-mysql'
     api 'com.psddev:dari-util'
     api 'org.slf4j:slf4j-api'
+    api 'com.psddev.component-lib:global-repeating-cron-task'
+    api 'com.fasterxml.jackson.core:jackson-databind'
 }

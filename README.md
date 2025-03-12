@@ -1,13 +1,6 @@
-> [!WARNING]
-> This README is a template for new Platform Extensions.
-> Notes in this format are instructions for you, the author, and must be deleted before the project is complete.
+# RecordSync
 
-# Example
-
-> [!WARNING]
-> This is a high-level summary of the functionality this extension provides.
-
-This extension provides the ability for Brightspot to print the words "Hello World" to the log when certain records are saved.
+This extension provides the ability for Brightspot to automatically and incrementally export records from one instance and import them into another.
 
 * [Prerequisites](#prerequisites)
 * [Installation](#installation)
@@ -20,25 +13,20 @@ This extension provides the ability for Brightspot to print the words "Hello Wor
 
 ## Prerequisites
 
-> [!WARNING]
-> This section should list any prerequisites that must be met before the extension can be installed or used. 
-> If a specific version of Brightspot is needed, it should be listed here.
-> If any external APIs are used (AWS, GCP, or any other third party service), they should be listed here.
-
-This extension requires an instance of [Brightspot](https://www.brightspot.com/) and access to the project source code.
+This extension requires an instance of [Brightspot](https://www.brightspot.com/) running at least Java 11 and access to the project source code.
 
 ## Installation
 
 Gradle:
 ```groovy
-api 'com.brightspot:platform-extension-example:1.0.0'
+api 'com.brightspot:recordsync:1.0.0'
 ```
 
 Maven:
 ```xml
 <dependency>
     <groupId>com.brightspot</groupId>
-    <artifactId>platform-extension-example</artifactId>
+    <artifactId>recordsync</artifactId>
     <version>1.0.0</version>
 </dependency>
 ```
@@ -47,23 +35,120 @@ Substitute `1.0.0` for the desired version found on the [releases](../../release
 
 ## Usage
 
-> [!WARNING]
-> This section describes how a developer would use this extension in their project.
-> It should include code samples, if applicable, as well as a link to the end user documentation. 
+This document assumes you have already created a secure storage bucket (e.g. AWS S3) and have the necessary credentials to access it. Reference the [Brightspot documentation to configure this StorageItem](https://www.brightspot.com/documentation/brightspot-cms-developer-guide/latest/configuring-storageitem), and take note of the `name` of the `StorageItem` configuration.
 
-To opt in to this behavior, implement the `SaysHelloWorld` interface on your content type:
+This extension is configured in the `context.xml` file. There are two different configurations: one for the "Exporter" and one for the "Importer."
 
-```java
-public class MyContentType extends Content implements SaysHelloWorld {
-    // ...
-}
+You can configure multiple exporters and importers by changing `primary` in the configuration keys to a different name.
+
+Some of the configuration options are required, while others are optional. The optional configurations have reasonable defaults, but you may want to adjust them based on your specific needs.
+
+The storage name and path prefix are required for both the exporter and importer configurations, and they must point to the same bucket and path.
+
+### Best Practices
+
+This extension is intended to incrementally sync records between two environments when one is a copy of the other. Exports are only saved for a brief period of time (see `dataRetentionHours`), and imports are only performed on records that are newer than the last export. 
+
+One example of a good use case is syncing records from a production environment to a lower environment. In this case, the exporter would be configured on the production environment, and the importer would be configured on the lower environment.
+
+Before this extension runs for the first time, it is recommended to start with a fresh "copy-down" of the production data to the lower environment database. Use the date of the copy-down as the `earliestDate` in the exporter configuration. This will ensure that only records created or modified after the copy-down are exported, which will save time, computing resources, bandwidth, and storage space.
+
+### Exporter Configuration
+```xml
+<?xml version="1.0" encoding="utf-8"?>
+<Context>
+    <!-- Schedule the exporter to run at your desired interval. This example is 4:25 AM every day. Required. -->
+    <Environment name="brightspot/recordsync/exporters/primary/cron"
+                 value="0 25 4 * * ?"
+                 type="java.lang.String"/>
+    <!-- The name of the storage bucket as configured elsewhere in this file. See: dari/storage/*. Required. -->
+    <Environment name="brightspot/recordsync/exporters/primary/storage"
+                 value="recordsync"
+                 type="java.lang.String"/>
+    <!-- The path prefix ("folder") that all records will be exported to in the storage bucket. Required. -->
+    <Environment name="brightspot/recordsync/exporters/primary/pathPrefix"
+                 value="recordsync"
+                 type="java.lang.String"/>
+    <!-- The hostname or IP address of the host that is responsible for running this export. Required. -->
+    <Environment name="brightspot/recordsync/exporters/primary/taskHost"
+                 value="task-server.local"
+                 type="java.lang.String"/>
+    <!-- The maximum size in MB of each export file (before compression).
+         Note that each entire file is processed in memory one at a time, so keep this relatively small.
+         The default is 100 MB. -->
+    <Environment name="brightspot/recordsync/exporters/primary/maxFileSizeMB"
+                 value="100"
+                 type="java.lang.String"/>
+    <!-- The batchSize is used as the LIMIT clause for the database query, and is also the maximum
+         number of records per file. The default is 5000. -->
+    <Environment name="brightspot/recordsync/exporters/primary/batchSize"
+                 value="5000"
+                 type="java.lang.String"/>
+    <!-- The number of hours to retain each exported file. The default is 168 (one week). -->
+    <Environment name="brightspot/recordsync/exporters/primary/dataRetentionHours"
+                 value="168"
+                 type="java.lang.String"/>
+    <!-- A comma-separated list of fully-qualified type names to exclude from exports. There are
+         already reasonable defaults in place (the example below is NOT the default!); this adds to that set. Optional. -->
+    <Environment name="brightspot/recordsync/exporters/primary/excludedTypes"
+                 value="com.psddev.cms.db.ToolEntity,com.psddev.cms.db.SiteSettings,com.psddev.sitemap.SiteMap,com.psddev.sitemap.SiteMapPartition"
+                 type="java.lang.String"/>
+    <!-- A comma-separated list of fully-qualified type names in case you _only_ want to export those types. Optional. -->
+    <Environment name="brightspot/recordsync/exporters/primary/includedTypes"
+                 value=""
+                 type="java.lang.String"/>
+    <!-- Records older than this timestamp will not be exported. Optional, but *strongly* recommended. -->
+    <Environment name="brightspot/recordsync/exporters/primary/earliestDate"
+                 value="1999-12-31T23:59:59Z"
+                 type="java.lang.String"/>
+</Context>
 ```
 
-Now, when a `MyContentType` record is saved, the words "Hello World" will be printed to the log.
+### Importer Configuration
+```xml
+<?xml version="1.0" encoding="utf-8"?>
+<Context>
+    <!-- Schedule the importer to run at your desired interval. This example is 5:25 AM every day. Required. -->
+    <Environment name="brightspot/recordsync/importers/primary/cron"
+                 value="0 25 5 * * ?"
+                 type="java.lang.String"/>
+    <!-- The name of the storage bucket as configured elsewhere in this file. See: dari/storage/*. Required. -->
+    <Environment name="brightspot/recordsync/importers/primary/storage"
+                 value="recordsync"
+                 type="java.lang.String"/>
+    <!-- The path prefix ("folder") that all records will be imported from in the storage bucket. Required. -->
+    <Environment name="brightspot/recordsync/importers/primary/pathPrefix"
+                 value="recordsync"
+                 type="java.lang.String"/>
+    <!-- The hostname or IP address of the host that is responsible for running this import. Required. -->
+    <Environment name="brightspot/recordsync/importers/primary/taskHost"
+                 value="task-server.local"
+                 type="java.lang.String"/>
+    <!-- Maximum number of records to import in a single transaction; The default is 500. -->
+    <Environment name="brightspot/recordsync/importers/primary/batchSize"
+                 value="500"
+                 type="java.lang.String"/>
+    <!-- A comma-separated list of fully-qualified type names to exclude from imports. There are
+         already reasonable defaults in place (the example below is NOT the default!); this adds to that set.
+         If the types have already been excluded on the exporter, there is no need to exclude them on the importer. Optional. -->
+    <Environment name="brightspot/recordsync/importers/primary/excludedTypes"
+                 value="com.psddev.cms.db.ToolEntity,com.psddev.cms.db.SiteSettings,com.psddev.sitemap.SiteMap,com.psddev.sitemap.SiteMapPartition"
+                 type="java.lang.String"/>
+    <!-- A comma-separated list of fully-qualified type names in case you _only_ want to import those types. Optional. -->
+    <Environment name="brightspot/recordsync/importers/primary/includedTypes"
+                 value=""
+                 type="java.lang.String"/>
+    <!-- Records older than this timestamp will not be imported. If the exporter 
+    has already set an earliestDate, this one is unnecessary. Optional. -->
+    <Environment name="brightspot/recordsync/exporters/primary/earliestDate"
+                 value="1999-12-31T23:59:59Z"
+                 type="java.lang.String"/>
+</Context>
+```
 
 ## Documentation
 
-- [Javadocs](https://artifactory.psdops.com/public/com/brightspot/platform-extension-example/%5BRELEASE%5D/platform-extension-example-%5BRELEASE%5D-javadoc.jar!/index.html)
+- [Javadocs](https://artifactory.psdops.com/public/com/brightspot/recordsync/%5BRELEASE%5D/recordsync-%5BRELEASE%5D-javadoc.jar!/index.html)
 
 ## Versioning
 
@@ -71,21 +156,21 @@ The version numbers for this extension will strictly follow [Semantic Versioning
 
 ## Contributing
 
-If you have feedback, suggestions or comments on this open-source platform extension, please feel free to make them publicly on the issues tab [here](https://github.com/brightspot/content-review-cycle/issues).
+If you have feedback, suggestions or comments on this open-source platform extension, please feel free to make them publicly on the issues tab [here](https://github.com/brightspot/recordsync/issues).
 
 Pull requests are welcome. For major changes, please open an issue first to discuss what you would like to change.
 
 ## Local Development
 
-Assuming you already have a local Brightspot instance up and running, you can 
-test this extension by running the following command from this project's root 
+Assuming you already have a local Brightspot instance up and running, you can
+test this extension by running the following command from this project's root
 directory to install a `SNAPSHOT` to your local Maven repository:
 
 ```shell
 ./gradlew -Prelease=local publishToMavenLocal
 ```
 
-Next, ensure your project's `build.gradle` file contains 
+Next, ensure your project's `build.gradle` file contains
 
 ```groovy
 repositories {
@@ -97,7 +182,7 @@ Then, add the following to your project's `build.gradle` file:
 
 ```groovy
 dependencies {
-    api 'com.brightspot:platform-extension-example:local'
+    api 'com.brightspot:recordsync:local'
 }
 ```
 

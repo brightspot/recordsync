@@ -16,7 +16,7 @@ plugins {
     id 'com.brightspot.gradle' version '1.1.1'
 }
 
-rootProject.name = 'platform-extension-example'
+rootProject.name = 'recordsync'
 
 brightspot {
     projectGroup = 'com.brightspot'
@@ -24,7 +24,7 @@ brightspot {
     versions {
         brightspot = '4.5.15.8'
         brightspotGo = '1.4.3'
-        java = 8
+        componentLib = '4.5.33'
         enforcePlatform = false
     }
 }
