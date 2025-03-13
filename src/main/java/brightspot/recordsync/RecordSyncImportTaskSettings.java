@@ -199,12 +199,18 @@ public class RecordSyncImportTaskSettings implements SettingsBackedObject, Globa
         return new RecordSyncImportTask("Record Sync Importers", taskName + ": " + name, name);
     }
 
+    @Override
+    public boolean isEnabled() {
+        // initialize would've failed otherwise.
+        return true;
+    }
+
     /**
      * Check Task Host to see if it is enabled.
      * @return true if the task host matches the current host, false otherwise.
      */
     @Override
-    public boolean isEnabled() {
+    public boolean isAllowedToRun() {
         try {
             InetAddress localhost = InetAddress.getLocalHost();
             InetAddress taskhost = InetAddress.getByName(taskHost.trim());
