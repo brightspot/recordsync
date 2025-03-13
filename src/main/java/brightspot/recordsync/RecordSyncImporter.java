@@ -3,6 +3,7 @@ package brightspot.recordsync;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.lang.reflect.InvocationTargetException;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
@@ -14,16 +15,18 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ArrayBlockingQueue;
 import java.util.stream.Collectors;
 import java.util.zip.GZIPInputStream;
 
+import com.psddev.dari.db.AsyncDatabaseWriter;
 import com.psddev.dari.db.Database;
 import com.psddev.dari.db.DatabaseEnvironment;
-import com.psddev.dari.db.DatabaseException;
-import com.psddev.dari.db.ObjectType;
 import com.psddev.dari.db.Query;
-import com.psddev.dari.db.Recordable;
 import com.psddev.dari.db.State;
+import com.psddev.dari.db.WriteOperation;
+import com.psddev.dari.util.AsyncQueue;
+import com.psddev.dari.util.ClassFinder;
 import com.psddev.dari.util.ObjectUtils;
 import com.psddev.dari.util.StorageItem;
 import com.psddev.dari.util.Task;
@@ -33,6 +36,7 @@ import org.slf4j.LoggerFactory;
 /**
  * Record Sync Importer.
  * This {@link Runnable} syncs records from a storage bucket and imports them into the Brightspot database.
+ * <p>It is intended to be instantiated once per import operation and run once.
  */
 public class RecordSyncImporter implements Runnable {
 
@@ -41,16 +45,22 @@ public class RecordSyncImporter implements Runnable {
     private final String name;
     private final String storage;
     private final String pathPrefix;
-    private final long batchSize;
+    private final int batchSize;
     private final Instant oldestDataTimestamp;
     private final Set<UUID> excludedTypeIds;
     private final Set<UUID> includedTypeIds;
     private final Task progressTask;
 
-    // Errors encountered during the import process. This should be cleared at the start of each import.
-    private final List<String> errors = new ArrayList<>();
+    private final Database database;
+    private final DatabaseEnvironment dbEnv;
+    private final AsyncQueue<State> saveQueue;
+    private final AsyncQueue<State> deleteQueue;
+    private final AsyncDatabaseWriter<State> saver;
+    private final AsyncDatabaseWriter<State> deleter;
+    private final List<RecordSyncImportSaveFilter> saveFilters;
+    private final List<RecordSyncImportDeleteFilter> deleteFilters;
 
-    public RecordSyncImporter(String name, String storage, String pathPrefix, long batchSize, Instant oldestDataTimestamp, Set<UUID> excludedTypeIds, Set<UUID> includedTypeIds, Task progressTask) {
+    public RecordSyncImporter(String name, String storage, String pathPrefix, int batchSize, Instant oldestDataTimestamp, Set<UUID> excludedTypeIds, Set<UUID> includedTypeIds, Task progressTask) {
         if (name == null || name.trim().isEmpty()) {
             throw new IllegalArgumentException("Name cannot be null or empty");
         }
@@ -75,12 +85,60 @@ public class RecordSyncImporter implements Runnable {
         this.excludedTypeIds = new HashSet<>(excludedTypeIds);
         this.includedTypeIds = new HashSet<>(includedTypeIds);
         this.progressTask = progressTask;
+        this.database = Database.Static.getDefault();
+        this.dbEnv = DatabaseEnvironment.getCurrent();
+        this.saveQueue = new AsyncQueue<>(new ArrayBlockingQueue<>(batchSize));
+        this.deleteQueue = new AsyncQueue<>(new ArrayBlockingQueue<>(batchSize));
+        this.saver = new AsyncDatabaseWriter<>(progressTask.getExecutor().getName(),
+                saveQueue,
+                database,
+                WriteOperation.SAVE_UNSAFELY,
+                this.batchSize,
+                true);
+        this.deleter = new AsyncDatabaseWriter<>(progressTask.getExecutor().getName(),
+            deleteQueue,
+            database,
+            WriteOperation.DELETE,
+            this.batchSize,
+            true);
+
+        this.saveFilters = ClassFinder.findConcreteClasses(RecordSyncImportSaveFilter.class)
+            .stream()
+            .map(cls -> {
+                try {
+                    return cls.getDeclaredConstructor().newInstance();
+                } catch (InstantiationException | IllegalAccessException
+                    | InvocationTargetException | NoSuchMethodException e) {
+                    throw new RuntimeException(e);
+                }
+            })
+            .map(RecordSyncImportSaveFilter.class::cast)
+            .collect(Collectors.toList());
+
+        this.deleteFilters = ClassFinder.findConcreteClasses(RecordSyncImportDeleteFilter.class)
+            .stream()
+            .map(cls -> {
+                try {
+                    return cls.getDeclaredConstructor().newInstance();
+                } catch (InstantiationException | IllegalAccessException
+                    | InvocationTargetException | NoSuchMethodException e) {
+                    throw new RuntimeException(e);
+                }
+            })
+            .map(RecordSyncImportDeleteFilter.class::cast)
+            .collect(Collectors.toList());
     }
 
+    /**
+     * Run the import task.
+     * <p>Note that this should be run only once per instance.
+     */
     @Override
     public void run() {
+        if (saveQueue.isClosed() || deleteQueue.isClosed()) {
+            throw new IllegalStateException("Save and/or Delete queues are already closed. Create a new instance for each import.");
+        }
         Instant now = Instant.now();
-        LOGGER.info("Importer [{}]: Starting record import", name);
         RecordSyncManifest manifest = RecordSyncManifest.load(storage, pathPrefix);
 
         RecordSyncLog log = Query.from(RecordSyncLog.class).where("name = ?", name).first();
@@ -100,19 +158,29 @@ public class RecordSyncImporter implements Runnable {
             .sorted()
             .collect(Collectors.toList());
 
-        long recordCount = 0L;
         long totalRecordCount = 0L;
         for (Long timestamp : timestampsToImport) {
             totalRecordCount += manifest.getRecordCounts().get(timestamp);
         }
+        if (totalRecordCount == 0) {
+            LOGGER.info("Importer [{}]: Nothing to import.", name);
+            return;
+        }
+        LOGGER.info("Importer [{}]: Starting record import", name);
         progressTask.setProgressTotal(totalRecordCount);
+        long recordCount = 0L;
+
+        // Start async writers
+        saver.submit();
+        deleter.submit();
+
         for (Long timestamp : timestampsToImport) {
             synchronized (this) {
                 List<String> files = manifest.getDataFiles().get(timestamp);
                 LOGGER.info("Importer [{}]: Importing [{}] files for timestamp [{}]: {}", name, files.size(), timestamp, files);
                 long startTime = System.currentTimeMillis();
 
-                errors.clear();
+                List<String> errors = new ArrayList<>();
                 long numberOfRecordsChanged = 0;
                 int numFiles = files.size();
                 int i = 0;
@@ -133,17 +201,28 @@ public class RecordSyncImporter implements Runnable {
                 entry.setTimestamp(timestamp);
                 entry.setExecutionMillis(System.currentTimeMillis() - startTime);
                 entry.setRecordChangeCount(numberOfRecordsChanged);
-                entry.setErrors(List.copyOf(errors));
+                entry.setErrors(errors);
                 log.getEntries().add(entry);
                 log.save();
-                errors.clear();
+            }
+        }
+
+        saveQueue.closeAutomatically();
+        deleteQueue.closeAutomatically();
+
+        while (saver.isRunning() || deleter.isRunning()) {
+            try {
+                //noinspection BusyWait
+                Thread.sleep(1000);
+            } catch (InterruptedException e) {
+                throw new RuntimeException(e);
             }
         }
 
         LOGGER.info("Importer [{}]: Imported [{}] records in [{}] seconds", name, recordCount, Duration.between(now, Instant.now()).toSeconds());
     }
 
-    private boolean transformAndSave(Database db, DatabaseEnvironment dbEnv, String recordJson) {
+    private Optional<StateAndOperation> transformJson(String recordJson) {
         Object recordObj = ObjectUtils.fromJson(recordJson);
         if (recordObj instanceof Map) {
             @SuppressWarnings("unchecked")
@@ -156,11 +235,11 @@ public class RecordSyncImporter implements Runnable {
                     Map<String, Object> deleteMap = (Map<String, Object>) deleteObj;
                     UUID deleteId = uuid(deleteMap.get("_id"));
                     UUID deleteTypeId = uuid(deleteMap.get("_type"));
-                    if (deleteId != null && deleteTypeId != null) {
-                        if ((includedTypeIds.isEmpty() || includedTypeIds.contains(deleteTypeId)) && !excludedTypeIds.contains(deleteTypeId)) {
-                            db.deleteByQuery(Query.fromAll().where("_id = ? and _type = ?", deleteId, deleteTypeId));
-                            return true;
-                        }
+                    if (deleteTypeId != null && !excludedTypeIds.contains(deleteTypeId) && (includedTypeIds.isEmpty() || includedTypeIds.contains(deleteTypeId))) {
+                        State state = new State();
+                        state.setTypeId(deleteTypeId);
+                        state.setId(deleteId);
+                        return Optional.of(new StateAndOperation(state, Operation.DELETE));
                     }
                 }
             } else {
@@ -168,17 +247,18 @@ public class RecordSyncImporter implements Runnable {
                 if (typeId != null && !excludedTypeIds.contains(typeId) && (includedTypeIds.isEmpty() || includedTypeIds.contains(typeId))) {
                     UUID id = uuid(recordMap.get("_id"));
                     if (id != null) {
-                        ObjectType objectType = dbEnv.getTypeById(typeId);
-                        Recordable record = (Recordable) objectType.createObject(id);
-                        State state = record.getState();
-                        state.putAll(recordMap);
-                        db.saveUnsafely(state);
-                        return true;
+                        State state = State.getInstance(dbEnv.createObject(typeId, id));
+                        if (state != null) {
+                            state.putAll(recordMap);
+                            return Optional.of(new StateAndOperation(state, Operation.SAVE));
+                        } else {
+                            LOGGER.error("Importer [{}]: Unable to create State for typeID [{}]", name, typeId);
+                        }
                     }
                 }
             }
         }
-        return false;
+        return Optional.empty();
     }
 
     private long downloadAndImportFile(String filename) throws IOException {
@@ -189,99 +269,52 @@ public class RecordSyncImporter implements Runnable {
         storageItem.setPath(pathPrefix + '/' + filename);
         InputStream data = storageItem.getData();
         String[] recordJsons = new String(gunzip(data), StandardCharsets.UTF_8).split("\n");
-        Database db = Database.Static.getDefault();
-        db.beginWrites();
-        DatabaseEnvironment dbEnv = DatabaseEnvironment.getCurrent();
-        try {
-            int endIndex = 0;
-            int startIndex = 0;
-            for (String recordJson : recordJsons) {
-                if (transformAndSave(db, dbEnv, recordJson)) {
-                    saved++;
-                    if (saved % batchSize == 0) {
-                        commitSafely(db, dbEnv, filename, recordJsons, startIndex, endIndex);
-                        LOGGER.debug("Saved {} records", saved);
-                        startIndex = endIndex + 1;
-                    }
-                } else {
-                    // Skipped due to included / excluded types
-                    LOGGER.debug("Importer [{}]: Unable to save record: {}", name, recordJson);
-                }
-                progressTask.addProgressIndex(1);
-                endIndex++;
+        for (String recordJson : recordJsons) {
+            Optional<StateAndOperation> sao = transformJson(recordJson);
+            if (sao.isPresent()) {
+                StateAndOperation stateAndOperation = sao.get();
+                queueWrite(stateAndOperation);
+                saved++;
             }
-            commitSafely(db, dbEnv, filename, recordJsons, startIndex, endIndex);
-        } finally {
-            db.endWrites();
+            progressTask.addProgressIndex(1);
         }
-
         LOGGER.debug("Saved {} records", saved);
         return saved;
     }
 
-    /**
-     * Commit the current transaction. If it fails, iterate through the records to isolate the failure and commit them in smaller batches.
-     * @param db The Database
-     * @param dbEnv The DatabaseEnvironment
-     * @param jsonStrings The complete array of JSON Strings in this batch
-     * @param startIndex The start index of the subset of jsonStrings to commit
-     * @param endIndex The end index of the subset of jsonStrings to commit
-     */
-    private void commitSafely(Database db, DatabaseEnvironment dbEnv, String filename, String[] jsonStrings, int startIndex, int endIndex) {
-        LOGGER.debug("Committing {} records, from {} to {}", endIndex - startIndex + 1, startIndex, endIndex);
-        // Processing the subset of jsonStrings from jsonStrings[startIndex] to jsonStrings[endIndex]
-        try {
-            db.commitWrites();
-            LOGGER.debug("Successfully committed {} record(s), from {} to {}.", endIndex - startIndex + 1, startIndex, endIndex);
-        } catch (DatabaseException e) {
-            if (startIndex == endIndex) {
-                String skipped = jsonStrings[startIndex];
-                int length = skipped.length();
-                String skippedId = "N/A";
-                String skippedTypeId = "N/A";
-                Object skippedObj = ObjectUtils.fromJson(skipped);
-                if (skippedObj instanceof Map) {
-                    @SuppressWarnings("unchecked")
-                    Map<String, Object> skippedMap = (Map<String, Object>) skippedObj;
-                    skippedId = (String) skippedMap.get("_id");
-                    skippedTypeId = (String) skippedMap.get("_type");
-                }
-                errors.add("Error committing writes for record ID [" + skippedId + "] of type [" + skippedTypeId + "] found on line [" + startIndex + "] of file [" + filename + "] (Exception: [" + e.getMessage() + "]). Skipping.");
-                LOGGER.error("Importer [{}]: Error committing writes for record ID [{}] of type [{}] found on line [{}] of file [{}] (Exception: [{}]). Skipping.\n{} [...] {}",
-                    name,
-                    skippedId,
-                    skippedTypeId,
-                    startIndex,
-                    filename,
-                    e.getMessage(),
-                    skipped.substring(0, Math.min(100, length)),
-                    skipped.substring(length - 100));
-                return;
-            }
-            LOGGER.debug("Error committing writes. Trying again to isolate the failure.", e);
-            int batchSize = Math.max(1, (endIndex - startIndex) / 2);
-            int localStartIndex = startIndex;
-            int localEndIndex = startIndex;
-            long saved = 0;
-            for (int i = startIndex; i <= endIndex; i++) {
-                String jsonRecord = jsonStrings[i];
-                if (transformAndSave(db, dbEnv, jsonRecord)) {
-                    saved++;
-                    if (saved % batchSize == 0) {
-                        LOGGER.debug("Recursively committing {} records, from {} to {}", localEndIndex - localStartIndex + 1, localStartIndex, localEndIndex);
-                        commitSafely(db, dbEnv, filename, jsonStrings, localStartIndex, localEndIndex);
-                        try {
-                            Thread.sleep(500);
-                        } catch (InterruptedException ex) {
-                            throw new RuntimeException(ex);
-                        }
-                        localStartIndex = localEndIndex + 1;
+    private void queueWrite(StateAndOperation stateAndOperation) {
+        State state = stateAndOperation.getState();
+        switch (stateAndOperation.getOperation()) {
+            case SAVE:
+                boolean shouldSave = true;
+                for (RecordSyncImportSaveFilter saveFilter : saveFilters) {
+                    try {
+                        shouldSave = shouldSave && saveFilter.shouldSave(name, state);
+                    } catch (RuntimeException e) {
+                        LOGGER.warn("Importer [{}]: Exception invoking [{}#shouldSave] attempting to import record ID [{}]. Not saving.", name, saveFilter.getClass().getName(), state.getId(), e);
+                        shouldSave = false;
                     }
                 }
-                localEndIndex++;
-            }
-            LOGGER.debug("Again, recursively committing {} records, from {} to {}", localEndIndex - localStartIndex + 1, localStartIndex, localEndIndex);
-            commitSafely(db, dbEnv, filename, jsonStrings, localStartIndex, localEndIndex);
+                if (shouldSave) {
+                    saveQueue.add(state);
+                }
+                break;
+            case DELETE:
+                boolean shouldDelete = true;
+                for (RecordSyncImportDeleteFilter deleteFilter : deleteFilters) {
+                    try {
+                        shouldDelete = shouldDelete && deleteFilter.shouldDelete(name, state);
+                    } catch (RuntimeException e) {
+                        LOGGER.warn("Importer [{}]: Exception invoking [{}#shouldDelete] attempting to delete record ID [{}]. Not deleting.", name, deleteFilter.getClass().getName(), state.getId(), e);
+                        shouldDelete = false;
+                    }
+                }
+                if (shouldDelete) {
+                    saveQueue.add(state);
+                }
+                break;
+            default:
+                throw new IllegalStateException("Importer [" + name + "]: Unknown state: " + stateAndOperation.getState());
         }
     }
 
@@ -296,11 +329,7 @@ public class RecordSyncImporter implements Runnable {
     private static byte[] gunzip(InputStream byteIn) throws IOException {
         try (GZIPInputStream gzipIn = new GZIPInputStream(byteIn)) {
             ByteArrayOutputStream byteOut = new ByteArrayOutputStream();
-            byte[] buffer = new byte[1024];
-            int len;
-            while ((len = gzipIn.read(buffer)) != -1) {
-                byteOut.write(buffer, 0, len);
-            }
+            gzipIn.transferTo(byteOut);
             return byteOut.toByteArray();
         }
     }
@@ -316,5 +345,34 @@ public class RecordSyncImporter implements Runnable {
             + ", excludedTypeIds=" + excludedTypeIds
             + ", includedTypeIds=" + includedTypeIds
             + '}';
+    }
+
+    /**
+     * Internal enum to represent a write operation.
+     */
+    private enum Operation {
+        SAVE,
+        DELETE
+    }
+
+    /**
+     * Internal tuple-like class to represent a State and an Operation.
+     */
+    private static class StateAndOperation {
+        private final State state;
+        private final Operation operation;
+
+        public StateAndOperation(State state, Operation operation) {
+            this.state = state;
+            this.operation = operation;
+        }
+
+        public State getState() {
+            return state;
+        }
+
+        public Operation getOperation() {
+            return operation;
+        }
     }
 }

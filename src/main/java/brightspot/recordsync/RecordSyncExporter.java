@@ -39,6 +39,7 @@ import org.slf4j.LoggerFactory;
 /**
  * Record Sync Exporter.
  * This {@link Runnable} syncs records to a storage bucket using the timestamp in the RecordUpdate table.
+ * <p>It is intended to be instantiated once per import operation and run once.
  */
 public class RecordSyncExporter implements Runnable {
 
@@ -344,13 +345,9 @@ public class RecordSyncExporter implements Runnable {
      * @throws IOException on failure
      */
     private static void gzip(InputStream is, OutputStream os) throws IOException {
-        GZIPOutputStream gzipOs = new GZIPOutputStream(os);
-        byte[] buffer = new byte[1024];
-        int bytesRead;
-        while ((bytesRead = is.read(buffer)) > -1) {
-            gzipOs.write(buffer, 0, bytesRead);
+        try (GZIPOutputStream gzipOs = new GZIPOutputStream(os)) {
+            is.transferTo(gzipOs);
         }
-        gzipOs.close();
     }
 
     /**

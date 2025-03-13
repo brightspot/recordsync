@@ -58,7 +58,7 @@ public class RecordSyncImportTaskSettings implements SettingsBackedObject, Globa
     public static final String STORAGE_SETTING = "storage"; // The named storage configuration that data is read from. Required.
     public static final String STORAGE_PATH_PREFIX_SETTING = "pathPrefix"; // The prefix appended to the base storage. Required.
     public static final String BATCH_SIZE_SETTING = "batchSize"; // Max number of records to import at a time. Default is DEFAULT_BATCH_SIZE.
-    public static final long DEFAULT_BATCH_SIZE = 500; // 500 records
+    public static final int DEFAULT_BATCH_SIZE = 500; // 500 records
     public static final String EXCLUDED_TYPES_SETTING = "excludedTypes"; // comma-separated list of fully qualified type names. Optional.
     public static final String INCLUDED_TYPES_SETTING = "includedTypes"; // comma-separated list of fully qualified type names. Optional.
     public static final String EARLIEST_DATE_SETTING = "earliestDate"; // ISO_INSTANT format (1999-12-31T23:59:59Z). Records older than this timestamp will never be imported. Optional.
@@ -70,7 +70,7 @@ public class RecordSyncImportTaskSettings implements SettingsBackedObject, Globa
     private String taskHost;
     private String storage;
     private String pathPrefix;
-    private long batchSize;
+    private int batchSize;
     private Set<UUID> excludedTypes;
     private Set<UUID> includedTypes;
     private Instant earliestDate;
@@ -146,7 +146,7 @@ public class RecordSyncImportTaskSettings implements SettingsBackedObject, Globa
             .orElseThrow(() -> new IllegalArgumentException("Missing required setting: " + settingsKey + "/" + STORAGE_PATH_PREFIX_SETTING));
         batchSize = Optional.ofNullable(settings.get(BATCH_SIZE_SETTING))
             .map(Object::toString)
-            .map(Long::parseLong)
+            .map(Integer::parseInt)
             .orElse(DEFAULT_BATCH_SIZE);
         DatabaseEnvironment dbEnv = DatabaseEnvironment.getDefault();
         excludedTypes = Stream.concat(Stream.of(UuidUtils.ZERO_UUID), // Exclude DistributedLock by default
@@ -228,7 +228,7 @@ public class RecordSyncImportTaskSettings implements SettingsBackedObject, Globa
         return storage;
     }
 
-    public long getBatchSize() {
+    public int getBatchSize() {
         return batchSize;
     }
 
