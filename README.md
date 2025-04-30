@@ -203,7 +203,7 @@ specific to the environment on which they were created.
                  type="java.lang.String"/>
     <!-- Records older than this timestamp will not be imported. If the exporter
          has already set an earliestDate, this one is unnecessary. Optional. -->
-    <Environment name="brightspot/recordsync/exporters/primary/earliestDate"
+    <Environment name="brightspot/recordsync/importers/primary/earliestDate"
                  value="1999-12-31T23:59:59Z"
                  type="java.lang.String"/>
 </Context>
