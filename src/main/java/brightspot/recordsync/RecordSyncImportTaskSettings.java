@@ -39,7 +39,7 @@ import org.slf4j.LoggerFactory;
  *     <li>brightspot/recordsync/importers/[NAME]/taskHost=job.brightspot // The host name or ip address of the tomcat instance that will execute this task. Required.
  *     <li>brightspot/recordsync/importers/[NAME]/storage=example-project-ops // Reference to a dari/storage setting. Required.
  *     <li>brightspot/recordsync/importers/[NAME]/pathPrefix=recordsync // Appended to the storage base path. Required.
- *     <li>brightspot/recordsync/exporters/[NAME]/enabled=true // Enabled flag. If all other settings are valid, the default is true.
+ *     <li>brightspot/recordsync/importers/[NAME]/enabled=true // Enabled flag. If all other settings are valid, the default is true.
  *     <li>brightspot/recordsync/importers/[NAME]/batchSize=200 // Maximum number of records to import at a time; Default is {@link #DEFAULT_BATCH_SIZE}.
  *     <li>brightspot/recordsync/importers/[NAME]/excludedTypes=com.psddev.cms.db.ToolEntity,com.psddev.cms.db.SiteSettings // Comma-separated type names to exclude from this import. There are already reasonable defaults in place; this adds to that set. Optional.
  *     <li>brightspot/recordsync/importers/[NAME]/includedTypes=com.psddev.cms.db.ToolEntity,com.psddev.cms.db.SiteSettings // Comma-separated type names to include in this import. Optional.
