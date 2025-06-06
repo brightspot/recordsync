@@ -39,6 +39,7 @@ import org.slf4j.LoggerFactory;
  *     <li>brightspot/recordsync/importers/[NAME]/taskHost=job.brightspot // The host name or ip address of the tomcat instance that will execute this task. Required.
  *     <li>brightspot/recordsync/importers/[NAME]/storage=example-project-ops // Reference to a dari/storage setting. Required.
  *     <li>brightspot/recordsync/importers/[NAME]/pathPrefix=recordsync // Appended to the storage base path. Required.
+ *     <li>brightspot/recordsync/exporters/[NAME]/enabled=true // Enabled flag. If all other settings are valid, the default is true.
  *     <li>brightspot/recordsync/importers/[NAME]/batchSize=200 // Maximum number of records to import at a time; Default is {@link #DEFAULT_BATCH_SIZE}.
  *     <li>brightspot/recordsync/importers/[NAME]/excludedTypes=com.psddev.cms.db.ToolEntity,com.psddev.cms.db.SiteSettings // Comma-separated type names to exclude from this import. There are already reasonable defaults in place; this adds to that set. Optional.
  *     <li>brightspot/recordsync/importers/[NAME]/includedTypes=com.psddev.cms.db.ToolEntity,com.psddev.cms.db.SiteSettings // Comma-separated type names to include in this import. Optional.
@@ -57,6 +58,7 @@ public class RecordSyncImportTaskSettings implements SettingsBackedObject, Globa
     public static final String TASK_HOST_SETTING = "taskHost"; // The host name or ip address of the tomcat instance that will execute this task. Required.
     public static final String STORAGE_SETTING = "storage"; // The named storage configuration that data is read from. Required.
     public static final String STORAGE_PATH_PREFIX_SETTING = "pathPrefix"; // The prefix appended to the base storage. Required.
+    public static final String ENABLED_SETTING = "enabled"; // Enabled flag for this task. Default is true.
     public static final String BATCH_SIZE_SETTING = "batchSize"; // Max number of records to import at a time. Default is DEFAULT_BATCH_SIZE.
     public static final int DEFAULT_BATCH_SIZE = 500; // 500 records
     public static final String EXCLUDED_TYPES_SETTING = "excludedTypes"; // comma-separated list of fully qualified type names. Optional.
@@ -70,6 +72,7 @@ public class RecordSyncImportTaskSettings implements SettingsBackedObject, Globa
     private String taskHost;
     private String storage;
     private String pathPrefix;
+    private boolean enabled;
     private int batchSize;
     private Set<UUID> excludedTypes;
     private Set<UUID> includedTypes;
@@ -144,6 +147,10 @@ public class RecordSyncImportTaskSettings implements SettingsBackedObject, Globa
         pathPrefix = Optional.ofNullable(settings.get(STORAGE_PATH_PREFIX_SETTING))
             .map(Object::toString)
             .orElseThrow(() -> new IllegalArgumentException("Missing required setting: " + settingsKey + "/" + STORAGE_PATH_PREFIX_SETTING));
+        enabled = Optional.ofNullable(settings.get(ENABLED_SETTING))
+            .map(Object::toString)
+            .map(Boolean::parseBoolean)
+            .orElse(true); // Default is true
         batchSize = Optional.ofNullable(settings.get(BATCH_SIZE_SETTING))
             .map(Object::toString)
             .map(Integer::parseInt)
@@ -175,7 +182,11 @@ public class RecordSyncImportTaskSettings implements SettingsBackedObject, Globa
             .map(Object::toString)
             .map(Instant::parse)
             .orElse(null);
-        LOGGER.info("Record Sync Import task [{}] scheduled to run [{}] on [{}]", name, CronUtils.getCronDescription(cron), taskHost);
+        if (enabled) {
+            LOGGER.info("Record Sync Import task [{}] scheduled to run [{}] on [{}]", name, CronUtils.getCronDescription(cron), taskHost);
+        } else {
+            LOGGER.info("Record Sync Import task [{}] is not enabled, otherwise it would run [{}] on [{}]", name, CronUtils.getCronDescription(cron), taskHost);
+        }
     }
 
     @Override
@@ -201,8 +212,7 @@ public class RecordSyncImportTaskSettings implements SettingsBackedObject, Globa
 
     @Override
     public boolean isEnabled() {
-        // initialize would've failed otherwise.
-        return true;
+        return enabled;
     }
 
     /**

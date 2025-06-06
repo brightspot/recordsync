@@ -21,7 +21,7 @@ running at least Java 11 and access to the project source code.
 
 Gradle:
 ```groovy
-api 'com.brightspot:recordsync:1.0.0'
+api 'com.brightspot:recordsync:1.1.0'
 ```
 
 Maven:
@@ -29,11 +29,11 @@ Maven:
 <dependency>
     <groupId>com.brightspot</groupId>
     <artifactId>recordsync</artifactId>
-    <version>1.0.0</version>
+    <version>1.1.0</version>
 </dependency>
 ```
 
-Substitute `1.0.0` for the desired version found on the [releases](../../releases) list.
+Substitute `1.1.0` for the desired version found on the [releases](../../releases) list.
 
 ## Usage
 
@@ -123,6 +123,11 @@ specific to the environment on which they were created.
     <Environment name="brightspot/recordsync/exporters/primary/taskHost"
                  value="task-server.local"
                  type="java.lang.String"/>
+    <!-- Enabled flag. If unspecified, the task will be enabled. Set it to
+         "false" to disable. -->
+    <Environment name="brightspot/recordsync/exporters/primary/enabled"
+                 value="true"
+                 type="java.lang.String"/>
     <!-- The maximum size in MB of each export file (before compression).
          Note that each entire file is processed in memory one at a time, so
          keep this relatively small.
@@ -182,6 +187,11 @@ specific to the environment on which they were created.
          this import. Required. -->
     <Environment name="brightspot/recordsync/importers/primary/taskHost"
                  value="task-server.local"
+                 type="java.lang.String"/>
+    <!-- Enabled flag. If unspecified, the task will be enabled. Set it to
+         "false" to disable. -->
+    <Environment name="brightspot/recordsync/importers/primary/enabled"
+                 value="true"
                  type="java.lang.String"/>
     <!-- Maximum number of records to import in a single transaction; The
          default is 500. -->

@@ -40,6 +40,7 @@ import org.slf4j.LoggerFactory;
  *     <li>brightspot/recordsync/exporters/[NAME]/taskHost=job.brightspot // The host name or ip address of the tomcat instance that will execute this task. Required.
  *     <li>brightspot/recordsync/exporters/[NAME]/storage=example-project-ops // Reference to a dari/storage setting. Required.
  *     <li>brightspot/recordsync/exporters/[NAME]/pathPrefix=recordsync // Appended to the storage base path. Required.
+ *     <li>brightspot/recordsync/exporters/[NAME]/enabled=true // Enabled flag. If all other settings are valid, the default is true.
  *     <li>brightspot/recordsync/exporters/[NAME]/maxFileSizeMB=50 // Maximum file size of each export file (before compression). Default is {@link #DEFAULT_MAX_FILE_SIZE_MB}.
  *     <li>brightspot/recordsync/exporters/[NAME]/batchSize=2000 // Maximum number of records in each export file; Also the LIMIT clause in the export SQL query. Default is {@link #DEFAULT_BATCH_SIZE}.
  *     <li>brightspot/recordsync/exporters/[NAME]/dataRetentionHours=72 // Retain exported files for this number of hours. Default is {@link #DEFAULT_DATA_RETENTION_HOURS}.
@@ -68,6 +69,7 @@ public class RecordSyncExportTaskSettings implements SettingsBackedObject, Globa
     public static final String TASK_HOST_SETTING = "taskHost"; // The host name or ip address of the tomcat instance that will execute this task. Required.
     public static final String STORAGE_SETTING = "storage"; // The named storage configuration that export data is written to. Required.
     public static final String STORAGE_PATH_PREFIX_SETTING = "pathPrefix"; // The prefix appended to the base storage. Required.
+    public static final String ENABLED_SETTING = "enabled"; // Enabled flag for this task. Default is true.
     public static final String MAX_FILE_SIZE_MB_SETTING = "maxFileSizeMB"; // Size of each export file in megabytes (before compression). Default is DEFAULT_MAX_FILE_SIZE_MB.
     public static final long DEFAULT_MAX_FILE_SIZE_MB = 100; // 100 MB
     public static final String BATCH_SIZE_SETTING = "batchSize"; // Limit clause of SQL query and max number of records of each export file. Default is DEFAULT_BATCH_SIZE.
@@ -95,6 +97,7 @@ public class RecordSyncExportTaskSettings implements SettingsBackedObject, Globa
     private String taskHost;
     private String storage;
     private String pathPrefix;
+    private boolean enabled;
     private long maxFileSizeMB;
     private long batchSize;
     private Duration dataRetention;
@@ -171,6 +174,10 @@ public class RecordSyncExportTaskSettings implements SettingsBackedObject, Globa
         pathPrefix = Optional.ofNullable(settings.get(STORAGE_PATH_PREFIX_SETTING))
             .map(Object::toString)
             .orElseThrow(() -> new IllegalArgumentException("Missing required setting: " + settingsKey + "/" + STORAGE_PATH_PREFIX_SETTING));
+        enabled = Optional.ofNullable(settings.get(ENABLED_SETTING))
+            .map(Object::toString)
+            .map(Boolean::parseBoolean)
+            .orElse(true); // Default is true
         maxFileSizeMB = Optional.ofNullable(settings.get(MAX_FILE_SIZE_MB_SETTING))
             .map(Object::toString)
             .map(Long::parseLong)
@@ -211,7 +218,11 @@ public class RecordSyncExportTaskSettings implements SettingsBackedObject, Globa
             .map(Object::toString)
             .map(Instant::parse)
             .orElse(null);
-        LOGGER.info("Record Sync Export task [{}] scheduled to run [{}] on [{}]", name, CronUtils.getCronDescription(cron), taskHost);
+        if (enabled) {
+            LOGGER.info("Record Sync Export task [{}] scheduled to run [{}] on [{}]", name, CronUtils.getCronDescription(cron), taskHost);
+        } else {
+            LOGGER.info("Record Sync Export task [{}] is not enabled, otherwise it would run [{}] on [{}]", name, CronUtils.getCronDescription(cron), taskHost);
+        }
     }
 
     @Override
@@ -237,8 +248,7 @@ public class RecordSyncExportTaskSettings implements SettingsBackedObject, Globa
 
     @Override
     public boolean isEnabled() {
-        // initialize would've failed otherwise.
-        return true;
+        return enabled;
     }
 
     /**
