@@ -250,6 +250,10 @@ public class RecordSyncImporter implements Runnable {
                         State state = State.getInstance(dbEnv.createObject(typeId, id));
                         if (state != null) {
                             state.putAll(recordMap);
+                            // Set the resolveToReferenceOnly flag to true to
+                            // avoid nulling out references to objects that may
+                            // not exist yet.
+                            state.setResolveToReferenceOnly(true);
                             return Optional.of(new StateAndOperation(state, Operation.SAVE));
                         } else {
                             LOGGER.error("Importer [{}]: Unable to create State for typeID [{}]", name, typeId);
