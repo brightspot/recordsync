@@ -21,7 +21,7 @@ running at least Java 11 and access to the project source code.
 
 Gradle:
 ```groovy
-api 'com.brightspot:recordsync:1.1.0'
+api 'com.brightspot:recordsync:1.1.1'
 ```
 
 Maven:
@@ -29,11 +29,11 @@ Maven:
 <dependency>
     <groupId>com.brightspot</groupId>
     <artifactId>recordsync</artifactId>
-    <version>1.1.0</version>
+    <version>1.1.1</version>
 </dependency>
 ```
 
-Substitute `1.1.0` for the desired version found on the [releases](../../releases) list.
+Substitute `1.1.1` for the desired version found on the [releases](../../releases) list.
 
 ## Usage
 
