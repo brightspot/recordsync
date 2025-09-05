@@ -99,6 +99,14 @@ You may also want to exclude `com.psddev.sitemap.SiteMap` and
 `com.psddev.sitemap.SiteMapPartition`, as these are large objects that are
 specific to the environment on which they were created.
 
+### Alternatively: Type Inclusions
+
+If your use case is limited to certain types, you may want to use `includedTypes` 
+instead. If you decide to go this route, make sure that you're also including any 
+important types that might be referenced by this type. One type in particular that
+you should almost certainly include is `com.psddev.cms.db.Directory` - without this 
+some of your permalinks may be incomplete.
+
 ### Exporter Configuration
 ```xml
 <?xml version="1.0" encoding="utf-8"?>
